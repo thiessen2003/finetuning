@@ -5,19 +5,49 @@ Converts images organized by BIRADS categories into JSONL format.
 """
 
 import json
-import base64
 from pathlib import Path
 from typing import Dict
+from urllib.parse import quote
 
 
-def encode_image_to_base64(image_path: Path) -> str:
-    """Encode an image file to base64 string."""
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode("utf-8")
+def get_github_raw_url(image_path: Path, project_root: Path, github_user: str = "thiessen2003", github_repo: str = "finetuning", branch: str = "main") -> str:
+    """
+    Generate GitHub raw URL for an image file.
+    
+    Args:
+        image_path: Absolute path to the image file
+        project_root: Root directory of the project
+        github_user: GitHub username
+        github_repo: Repository name
+        branch: Branch name (default: main)
+        
+    Returns:
+        GitHub raw URL string
+    """
+    # Get relative path from project root
+    try:
+        relative_path = image_path.relative_to(project_root)
+    except ValueError:
+        # If path is not relative to project root, use it as-is
+        relative_path = image_path
+    
+    # Convert to string and URL encode each part
+    path_parts = str(relative_path).replace("\\", "/").split("/")
+    
+    # Replace data_rgb with data in the URL (since we'll upload data_rgb as data to GitHub)
+    # Or keep data_rgb if you want to maintain separate folders
+    # For now, we'll replace data_rgb with data for GitHub compatibility
+    path_parts = [part.replace("data_rgb", "data") if "data_rgb" in part else part for part in path_parts]
+    
+    encoded_parts = [quote(part, safe="") for part in path_parts]
+    encoded_path = "/".join(encoded_parts)
+    
+    # Construct GitHub raw URL
+    return f"https://raw.githubusercontent.com/{github_user}/{github_repo}/{branch}/{encoded_path}"
 
 
 def create_training_example(
-    image_path: Path,
+    image_url: str,
     birads_category: str,
     system_message: str = "You are a medical imaging assistant that classifies breast mammograms using BIRADS categories.",
     user_text: str = "What is the BIRADS classification for this mammogram?",
@@ -26,7 +56,7 @@ def create_training_example(
     Create a single training example in OpenAI fine-tuning format.
     
     Args:
-        image_path: Path to the image file
+        image_url: GitHub raw URL to the image
         birads_category: The BIRADS category (e.g., "1", "2", "3", "4", "5")
         system_message: System message for the conversation
         user_text: User's text prompt
@@ -34,9 +64,6 @@ def create_training_example(
     Returns:
         Dictionary representing the training example
     """
-    # Encode image to base64
-    base64_image = encode_image_to_base64(image_path)
-    
     # Create the message structure matching OpenAI's format
     messages = [
         {
@@ -53,7 +80,7 @@ def create_training_example(
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/png;base64,{base64_image}"
+                        "url": image_url
                     }
                 }
             ]
@@ -70,9 +97,13 @@ def create_training_example(
 def prepare_finetuning_data(
     data_dir: Path,
     output_file: Path,
+    project_root: Path,
     system_message: str = None,
     user_text: str = None,
     max_images_per_category: int = 30,
+    github_user: str = "thiessen2003",
+    github_repo: str = "finetuning",
+    branch: str = "main",
 ) -> None:
     """
     Prepare all images for fine-tuning and write to JSONL file.
@@ -80,12 +111,17 @@ def prepare_finetuning_data(
     Args:
         data_dir: Directory containing BIRADS category folders
         output_file: Path to output JSONL file
+        project_root: Root directory of the project (for generating GitHub URLs)
         system_message: Optional custom system message
         user_text: Optional custom user text prompt
         max_images_per_category: Maximum number of images to use per category (default: 30)
+        github_user: GitHub username (default: thiessen2003)
+        github_repo: Repository name (default: finetuning)
+        branch: Branch name (default: main)
     """
     data_dir = Path(data_dir)
     output_file = Path(output_file)
+    project_root = Path(project_root)
     
     # Default messages
     default_system = "You are a medical imaging assistant that classifies breast mammograms using BIRADS categories."
@@ -120,8 +156,17 @@ def prepare_finetuning_data(
         print(f"  Processing {num_images} images from {birads_folder.name} (BIRADS {category})...")
         
         for image_path in image_files:
-            example = create_training_example(
+            # Generate GitHub raw URL
+            image_url = get_github_raw_url(
                 image_path=image_path,
+                project_root=project_root,
+                github_user=github_user,
+                github_repo=github_repo,
+                branch=branch,
+            )
+            
+            example = create_training_example(
+                image_url=image_url,
                 birads_category=category,
                 system_message=system_msg,
                 user_text=user_txt,
@@ -146,7 +191,8 @@ def prepare_finetuning_data(
 if __name__ == "__main__":
     # Set up paths (relative to project root)
     project_root = Path(__file__).parent
-    data_dir = project_root / "data" / "İnbreast"
+    # Use data_rgb folder which contains RGB/RGBA converted images
+    data_dir = project_root / "data_rgb" / "İnbreast"
     output_file = project_root / "training_data.jsonl"
     
     # You can customize these messages if needed
@@ -160,7 +206,11 @@ if __name__ == "__main__":
     prepare_finetuning_data(
         data_dir=data_dir,
         output_file=output_file,
+        project_root=project_root,
         system_message=custom_system_message,
         user_text=custom_user_text,
         max_images_per_category=30,
+        github_user="thiessen2003",
+        github_repo="finetuning",
+        branch="main",
     )
